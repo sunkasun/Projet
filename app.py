@@ -52,8 +52,9 @@ def _fmt_time(seconds: float) -> str:
         return f"{seconds * 1000:.0f} ms"
     return f"{seconds:.2f} s"
 
-
-# --- Initialisation de la session Streamlit ---
+# ---------------------------------------------------------------------------
+# Initialisation de la session Streamlit
+# ---------------------------------------------------------------------------
 def _init_state(*args: Any) -> None:
     """Initialise session_state avec les valeurs par défaut."""
     for key, value in DEFAULTS.items():
@@ -103,11 +104,9 @@ def _build_pricer_from_session() -> PricerParameters:
 
 def _build_objects(*args: Any) -> Tuple[PricerParameters, Market, Option]:
     """Construit pricer, market et option depuis session_state."""
-    # --- Vérification préalable des dates ---
     if st.session_state.maturity <= st.session_state.pricing_date:
         st.sidebar.error("⚠️ Maturity must be after pricing date.")
         st.stop()
-    # --- Construction des 3 objets ---
     return (_build_pricer_from_session(),
             _build_market_from_session(),
             _build_option_from_session())
@@ -128,7 +127,7 @@ def _nb_steps_from_error(max_error: float, s0: float, vol: float,
 
 
 # ---------------------------------------------------------------------------
-# Colonnes du DataFrame Greeks (une sous-fonction par colonne)
+# Colonnes du DataFrame Greeks
 # ---------------------------------------------------------------------------
 def _greeks_col_tree(results: dict, names: List[str]) -> List[str]:
     """Colonne empirique (tree) du tableau Greeks."""
@@ -227,7 +226,7 @@ def _render_run_recap_from_snapshot(snap: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar : sections market / option / pricer
+# Sidebar
 # ---------------------------------------------------------------------------
 def _render_sidebar(*args: Any) -> None:
     """Rend tous les widgets de la sidebar."""
@@ -286,7 +285,6 @@ def _render_sidebar_pricer(*args: Any) -> None:
                      key="tree_mode", format_func=_format_tree_mode)
 
 
-# --- Formatage du nom du mode d'arbre ---
 def _format_tree_mode(x: str) -> str:
     """Formate le nom du mode d'arbre pour l'affichage."""
     if x == "binomial_with_div_switch":
@@ -359,12 +357,12 @@ def _render_shift_info(*args: Any) -> Tuple[float, float, float, float,
     N = int(st.session_state.nb_steps)
     h_s, h_vol = _compute_adaptive_shifts(s0, vol, N)
     shift_rho, shift_theta_days = 0.01, 1
-    # --- Affiche les shifts pris ---
     st.caption(
         f"ℹ️ **Adaptive finite-difference shifts** (N={N}): "
         f"Δ = {h_s:.4f} · Γ = {h_s:.4f} · "
         f"ν = {h_vol:.4f} · Vomma = {h_vol:.4f} · "
-        f"Vanna = ({h_s:.4f}, {h_vol:.4f})")
+        f"Vanna = ({h_s:.4f}, {h_vol:.4f})"
+    )
     return (h_s, h_s, h_vol, h_vol, h_s, h_vol, shift_rho,
             shift_theta_days)
 
@@ -504,7 +502,7 @@ def _render_study_captions(flags: Dict[str, bool],
 
 
 # ---------------------------------------------------------------------------
-# Contexte : helpers isolés
+# Contexte
 # ---------------------------------------------------------------------------
 def _compute_target_error(N: int, s0: float, r: float, sigma: float,
                           T_years: float) -> float:
@@ -577,7 +575,6 @@ def _prepare_context(pricer: PricerParameters, market: Market,
     target_error = _compute_target_error(
         sess["N"], sess["s0"], sess["r"],
         sess["sigma"], sess["T_years"])
-    # --- Assemblage ---
     ctx: Dict[str, Any] = dict(sess)
     ctx.update(_context_objects_dict(pricer, market, option))
     ctx.update(_context_flags_dict(market, option))
@@ -586,7 +583,7 @@ def _prepare_context(pricer: PricerParameters, market: Market,
 
 
 # ---------------------------------------------------------------------------
-# Création des placeholders (initialisés avec WAITING_MD)
+# Placeholders
 # ---------------------------------------------------------------------------
 def _make_waiting_placeholder(col: Any) -> Any:
     """Crée un placeholder vide avec le loader WAITING_MD."""
@@ -655,7 +652,7 @@ def _create_placeholders_advanced(flags: Dict[str, bool],
 
 
 # ---------------------------------------------------------------------------
-# Exécution : découpée en 4 sous-fonctions
+# Exécution
 # ---------------------------------------------------------------------------
 def _prepare_snapshot_and_recap(ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Prépare le snapshot et affiche le récapitulatif."""
@@ -695,15 +692,12 @@ def _persist_results(results: Dict[str, Any], timings: Dict[str, float],
 
 def _execute_all(flags: Dict[str, bool], ctx: Dict[str, Any]) -> None:
     """Exécute tous les calculs et remplit les placeholders."""
-    # --- Nettoyage de l'état précédent ---
     st.session_state.excel_bytes = None
     st.session_state.debug_tree = None
     st.divider()
     st.subheader("Results")
-    # --- Snapshot et placeholders ---
     snap = _prepare_snapshot_and_recap(ctx)
     ph = _create_placeholders(flags, ctx)
-    # --- Calculs puis persistance ---
     results, timings, tree_obj = _run_all_computations(flags, ph, ctx)
     _persist_results(results, timings, snap, tree_obj)
 
@@ -778,9 +772,8 @@ def _fill_greeks(flags: Dict[str, bool], ph: Dict[str, Any],
     """Remplit le tableau des Greeks."""
     if not (flags["greeks_tree"] or flags["greeks_bs"]):
         return
-    shifts = _render_shift_info() if flags["greeks_tree"] else None
     if flags["greeks_tree"]:
-        _fill_greeks_tree(results, timings, shifts, ctx)
+        _fill_greeks_tree(results, timings, ctx["shifts"], ctx)
     if flags["greeks_bs"]:
         _fill_greeks_bs(results, timings, ctx)
     _render_greeks_table(ph, results, timings)
@@ -1435,6 +1428,9 @@ def _render_max_display_input(ctx: Dict[str, Any]) -> None:
 def _render_main_widgets(ctx: Dict[str, Any]) -> Dict[str, bool]:
     """Rend les checkboxes et captions du panneau principal."""
     flags = _render_checkboxes(ctx)
+    # --- Shift info AVANT les captions d'études (comme dans l'original) ---
+    if flags["greeks_tree"]:
+        ctx["shifts"] = _render_shift_info()
     _render_study_captions(flags, ctx)
     if flags["show_tree"]:
         _render_max_display_input(ctx)
