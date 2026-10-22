@@ -485,9 +485,7 @@ def _render_flag_warnings(flags: Dict[str, bool],
     if not ctx["bs_available"]:
         st.caption("⚠️ Black & Scholes is unavailable for American "
                    "options or when a discrete dividend is present.")
-    if ctx["disable_sweeps"] and (
-            flags["exec_time"] or flags["pruning_compare"]
-            or flags["conv"] or flags["compare_methods"]):
+    if ctx["disable_sweeps"]:
         st.caption(f"⚠️ Sweep studies are disabled because N={ctx['N']} "
                    "is too small (<10) or too large (>1000).")
 
