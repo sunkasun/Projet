@@ -341,12 +341,19 @@ def _valid_error_inputs(T: float) -> bool:
 # ---------------------------------------------------------------------------
 def _compute_adaptive_shifts(s0: float, vol: float,
                               N: int) -> Tuple[float, float]:
-    """Calcule les shifts adaptatifs pour delta/gamma/vega."""
-    if N < 30:
-        return 0.10 * s0, 0.25 * vol
-    if N < 100:
-        return 0.05 * s0, 0.25 * vol
-    return 0.02 * s0, 0.20 * vol
+    """
+    Calcule les shifts optimaux pour les différences finies.
+    Basé sur la théorie : h_opt dérive du compromis bruit/troncature.
+    - Dérivée 1ère (Delta, Vega) : erreur ~ C1*h² + C2/h -> h* ∝ N^(-1/3)
+    - Dérivée 2nde (Gamma, Vomma) : erreur ~ C1*h² + C2/h² -> h* ∝ N^(-1/4)
+    On prend un pivot à N=100, où h_S = 5% S0 et h_vol = 15% vol.
+    """
+    scale = (100.0 / max(N, 10)) ** 0.25
+    h_S = 0.05 * s0 * scale
+    h_S = min(0.25 * s0, max(0.01 * s0, h_S))
+    h_vol = 0.15 * vol * scale
+    h_vol = min(0.50 * vol, max(0.005, h_vol))
+    return h_S, h_vol
 
 
 def _render_shift_info(*args: Any) -> Tuple[float, float, float, float,
