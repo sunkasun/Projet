@@ -457,7 +457,8 @@ def _render_checkboxes_advanced(ctx: Dict[str, Any]) -> Dict[str, bool]:
     return {
         "exercise_prob": st.checkbox(
             "Exercise probability by dates",
-            disabled=not ctx["is_american"]),
+            disabled=not ctx["is_american"],
+            help="Only for American options."),
         "amer_vs_euro": st.checkbox("American vs. European vs. rate"),
         "avg_value": st.checkbox("Average option value by dates"),
         "price_vs_exdiv": st.checkbox("Price vs. ex-div date"),
