@@ -23,7 +23,7 @@ from studies import american_european_gap_vs_rate, price_vs_ex_div_date
 
 
 # ---------------------------------------------------------------------------
-# Valeurs par défaut
+# Valeurs par défaut et constantes
 # ---------------------------------------------------------------------------
 DEFAULTS: Dict[str, Any] = {
     "s0": 100.0, "rate": 0.03, "vol": 0.2, "dividend": 0.0,
@@ -37,6 +37,8 @@ DEFAULTS: Dict[str, Any] = {
     "tree_mode": "binomial_with_div_switch",
     "debug": False,
 }
+
+WAITING_MD = "*⏳ Computing...*"
 
 
 # ---------------------------------------------------------------------------
@@ -238,25 +240,28 @@ def _render_sidebar_market(*args: Any) -> None:
     """Section Market data de la sidebar."""
     st.sidebar.header("Market data")
     st.sidebar.number_input("Underlying (S0)", key="s0", min_value=1e-6,
-                            format="%.4f", help="Doit être > 0.")
+                            format="%.4f",
+                            help="Must be strictly positive.")
     st.sidebar.number_input("Risk-free rate (r)", key="rate",
                             min_value=-1.0, max_value=1.0, format="%.4f",
-                            help="Borné dans [-1, +1].")
+                            help="Bounded at [-1, +1].")
     st.sidebar.number_input("Volatility (σ)", key="vol", min_value=1e-6,
-                            format="%.6f", help="Doit être > 0.")
+                            format="%.6f",
+                            help="Must be strictly positivee.")
     st.sidebar.number_input("Discrete dividend (€)", key="dividend",
                             min_value=0.0, format="%.4f")
     st.sidebar.date_input("Ex-dividend date", key="ex_div_date",
-                          help="Ignoré si dividend = 0.")
+                          help="Ignored if dividend = 0.")
 
 
 def _render_sidebar_option(*args: Any) -> None:
     """Section Option data de la sidebar."""
     st.sidebar.header("Option data")
     st.sidebar.number_input("Strike price (K)", key="K", min_value=0.01,
-                            format="%.4f", help="Doit être > 0.")
+                            format="%.4f",
+                            help="Must be strictly positive.")
     st.sidebar.date_input("Maturity date", key="maturity",
-                          help="Doit être après la date de pricing.")
+                          help="Must be strictly after the pricing date.")
     st.sidebar.radio("Option type", ["call", "put"], key="call_put",
                      horizontal=True, format_func=lambda x: x.capitalize())
     st.sidebar.radio("Exercise style", ["european", "american"],
@@ -274,7 +279,8 @@ def _render_sidebar_pricer(*args: Any) -> None:
     st.sidebar.radio("Pricing method", ["backward", "recursive"],
                      key="method", horizontal=True,
                      format_func=lambda x: x.capitalize(),
-                     help="Recursive limité à ~900 pas.")
+                     help="Recursive limited at ~900 steps "
+                          "(RecursionError).")
     st.sidebar.radio("Tree mode",
                      ["binomial_with_div_switch", "trinomial_everywhere"],
                      key="tree_mode", format_func=_format_tree_mode)
@@ -306,7 +312,7 @@ def _render_nb_steps_input(*args: Any) -> None:
     """Champ de saisie direct du nombre de pas."""
     st.sidebar.number_input("Number of steps (N)", key="nb_steps",
                             min_value=1, max_value=10000, step=1,
-                            help="≤ 900 si method = recursive.")
+                            help="≤ 900 if method = recursive.")
 
 
 def _render_max_error_input(*args: Any) -> None:
@@ -353,10 +359,12 @@ def _render_shift_info(*args: Any) -> Tuple[float, float, float, float,
     N = int(st.session_state.nb_steps)
     h_s, h_vol = _compute_adaptive_shifts(s0, vol, N)
     shift_rho, shift_theta_days = 0.01, 1
-    msg = (f"ℹ️ **Shifts adaptatifs (N={N})** : "
-           f"Δ = {h_s:.4f} · Γ = {h_s:.4f} · ν = {h_vol:.4f} · "
-           f"Vomma = {h_vol:.4f} · Vanna = ({h_s:.4f}, {h_vol:.4f})")
-    st.caption(msg)
+    # --- Affiche les shifts pris ---
+    st.caption(
+        f"ℹ️ **Adaptive finite-difference shifts** (N={N}): "
+        f"Δ = {h_s:.4f} · Γ = {h_s:.4f} · "
+        f"ν = {h_vol:.4f} · Vomma = {h_vol:.4f} · "
+        f"Vanna = ({h_s:.4f}, {h_vol:.4f})")
     return (h_s, h_s, h_vol, h_vol, h_s, h_vol, shift_rho,
             shift_theta_days)
 
@@ -405,10 +413,11 @@ def _render_checkboxes_standard_first(ctx: Dict[str, Any]) -> Dict[str, bool]:
         "error_curve": st.checkbox(
             "Show error vs. steps curve",
             disabled=not ctx["bs_available"] or ctx["N"] < 30,
-            help="Désactivé si N < 30."),
+            help="Disabled if N < 30 (so the convergence tunnel is "
+                 "visible)."),
         "exec_time": st.checkbox(
             "Study execution time", disabled=ctx["disable_sweeps"],
-            help="Désactivé si N < 10 ou N > 1000."),
+            help="Disabled if N < 10 or N > 1000."),
     }
 
 
@@ -417,15 +426,15 @@ def _render_checkboxes_standard_second(ctx: Dict[str, Any]) -> Dict[str, bool]:
     return {
         "pruning_compare": st.checkbox(
             "Compare pruning ON vs OFF", disabled=ctx["disable_sweeps"],
-            help="Désactivé si N < 10 ou N > 1000."),
+            help="Disabled if N < 10 or N > 1000."),
         "conv": st.checkbox(
             "Study convergence with B&S",
             disabled=not ctx["bs_available"] or ctx["disable_sweeps"],
-            help="Désactivé si N < 10 ou N > 1000."),
+            help="Disabled if N < 10 or N > 1000."),
         "compare_methods": st.checkbox(
             "Backward vs. recursive comparison",
             disabled=ctx["disable_sweeps"],
-            help="Désactivé si N < 10 ou N > 1000."),
+            help="Disabled if N < 10 or N > 1000."),
     }
 
 
@@ -469,13 +478,13 @@ def _render_flag_warnings(flags: Dict[str, bool],
                           ctx: Dict[str, Any]) -> None:
     """Affiche les warnings sur les options indisponibles."""
     if not ctx["bs_available"]:
-        st.caption("⚠️ Black & Scholes indisponible pour les options "
-                   "américaines ou avec dividende discret.")
+        st.caption("⚠️ Black & Scholes is unavailable for American "
+                   "options or when a discrete dividend is present.")
     if ctx["disable_sweeps"] and (
             flags["exec_time"] or flags["pruning_compare"]
             or flags["conv"] or flags["compare_methods"]):
-        st.caption(f"⚠️ Études désactivées : N={ctx['N']} trop petit (<10) "
-                   "ou trop grand (>1000).")
+        st.caption(f"⚠️ Sweep studies are disabled because N={ctx['N']} "
+                   "is too small (<10) or too large (>1000).")
 
 
 def _render_study_captions(flags: Dict[str, bool],
@@ -483,13 +492,15 @@ def _render_study_captions(flags: Dict[str, bool],
     """Affiche les captions des paramètres dérivés des études."""
     if flags["strike_study"]:
         st.caption(f"ℹ️ Strike range : **{ctx['strike_min']} → "
-                   f"{ctx['strike_max']}** (K ± 50%, K={ctx['K']:.2f})")
+                   f"{ctx['strike_max']}** (K ± 50%, "
+                   f"déduit de K={ctx['K']:.2f})")
     if flags["error_curve"]:
         st.caption(f"ℹ️ Target error : **{ctx['target_error']:.4e} €** "
-                   f"(déduit de N={ctx['N']} via Gap(N)=C/N)")
+                   f"(déduit de N={ctx['N']} via Gap(N) = C/N)")
     if flags["amer_vs_euro"]:
         st.caption(f"ℹ️ Rate range : **{ctx['rate_min']:.2%} → "
-                   f"{ctx['rate_max']:.2%}** (15 points)")
+                   f"{ctx['rate_max']:.2%}** "
+                   f"(±5%, {ctx['rate_points']} points)")
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +577,7 @@ def _prepare_context(pricer: PricerParameters, market: Market,
     target_error = _compute_target_error(
         sess["N"], sess["s0"], sess["r"],
         sess["sigma"], sess["T_years"])
+    # --- Assemblage ---
     ctx: Dict[str, Any] = dict(sess)
     ctx.update(_context_objects_dict(pricer, market, option))
     ctx.update(_context_flags_dict(market, option))
@@ -574,8 +586,15 @@ def _prepare_context(pricer: PricerParameters, market: Market,
 
 
 # ---------------------------------------------------------------------------
-# Création des placeholders
+# Création des placeholders (initialisés avec WAITING_MD)
 # ---------------------------------------------------------------------------
+def _make_waiting_placeholder(col: Any) -> Any:
+    """Crée un placeholder vide avec le loader WAITING_MD."""
+    ph = col.empty()
+    ph.markdown(WAITING_MD)
+    return ph
+
+
 def _create_placeholders(flags: Dict[str, bool],
                          ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Crée tous les conteneurs vides dans l'ordre d'affichage."""
@@ -593,12 +612,12 @@ def _create_placeholders_prices(flags: Dict[str, bool],
         st.markdown("**Prices**")
         pc1, pc2 = st.columns(2)
         if flags["tree_price"]:
-            ph["tree_price"] = pc1.empty()
+            ph["tree_price"] = _make_waiting_placeholder(pc1)
         if flags["bs_price"]:
-            ph["bs_price"] = pc2.empty()
+            ph["bs_price"] = _make_waiting_placeholder(pc2)
     if flags["greeks_tree"] or flags["greeks_bs"]:
         st.markdown("**Greeks**")
-        ph["greeks"] = st.empty()
+        ph["greeks"] = _make_waiting_placeholder(st)
 
 
 def _create_placeholders_standard(flags: Dict[str, bool],
@@ -615,7 +634,7 @@ def _create_placeholders_standard(flags: Dict[str, bool],
     for flag_key, ph_key, title in standard:
         if flags[flag_key]:
             st.markdown(f"**{title}**")
-            ph[ph_key] = st.empty()
+            ph[ph_key] = _make_waiting_placeholder(st)
 
 
 def _create_placeholders_advanced(flags: Dict[str, bool],
@@ -632,7 +651,7 @@ def _create_placeholders_advanced(flags: Dict[str, bool],
     for flag_key, ph_key, title in advanced:
         if flags[flag_key]:
             st.markdown(f"**{title}**")
-            ph[ph_key] = st.empty()
+            ph[ph_key] = _make_waiting_placeholder(st)
 
 
 # ---------------------------------------------------------------------------
@@ -728,7 +747,7 @@ def _fill_tree_price(ph: Dict[str, Any], results: Dict[str, Any],
                      price: Optional[float]) -> None:
     """Remplit le prix de l'arbre."""
     if price is None:
-        st.error("Pricing récursif échoué (RecursionError). "
+        st.error("Le pricing récursif a échoué (RecursionError). "
                  "Utilise Backward.")
         return
     results["tree_price"] = price
@@ -863,7 +882,7 @@ def _fill_error_curve(ph: Dict[str, Any], results: Dict[str, Any],
     with ph["error_curve"].container():
         st.pyplot(fig)
         st.caption(f"⏱ {_fmt_time(timings['error_curve'])} "
-                   "— courbe théorique")
+                   "— theoretical curve")
 
 
 def _fill_exec_time(ph: Dict[str, Any], results: Dict[str, Any],
@@ -1230,10 +1249,10 @@ def _display_cross_check(backward_price: float, terminal_price: float,
     c3.metric("Écart", f"{diff:.2e}")
     tol = max(1e-9, 1e-4 * abs(backward_price))
     if diff < tol:
-        st.success(f"Les deux méthodes concordent "
-                   f"(gap = {diff:.2e} < tolérance = {tol:.2e}).")
+        st.success(f"The two methods match "
+                   f"(gap = {diff:.2e} < tolerance = {tol:.2e}).")
     else:
-        st.error(f"Écart anormal : {diff:.2e} > tolérance = {tol:.2e}.")
+        st.error(f"Abnormal gap : {diff:.2e} > tolerance = {tol:.2e}.")
 
 
 def _render_debug_cross_check(tree_obj: Tree) -> None:
@@ -1246,7 +1265,7 @@ def _render_debug_cross_check(tree_obj: Tree) -> None:
         values = _compute_cross_check(tree_obj)
         _display_cross_check(*values)
     except Exception as e:
-        st.warning(f"Cross-check indisponible : {e}")
+        st.warning(f"Cross-check unvailable : {e}")
 
 
 def _display_sanity_check(c: Dict[str, str]) -> None:
@@ -1270,7 +1289,7 @@ def _render_debug_sanity(tree_obj: Tree) -> None:
         for c in tree_obj.sanity_checks():
             _display_sanity_check(c)
     except Exception as e:
-        st.error(f"Sanity checks indisponibles : {e}")
+        st.error(f"Sanity checks unvailable : {e}")
 
 
 def _render_debug_steps_table(tree_obj: Tree) -> None:
