@@ -1294,7 +1294,7 @@ def _render_debug_sanity(tree_obj: Tree) -> None:
 def _render_debug_steps_table(tree_obj: Tree) -> None:
     """Affiche le DataFrame détaillé des steps."""
     df = tree_obj.debug_steps_dataframe()
-    with st.expander(f"Détail by step ({len(df)} lines)", expanded=False):
+    with st.expander(f"Detail by step ({len(df)} lines)", expanded=False):
         st.dataframe(df, hide_index=True, use_container_width=True)
 
 
