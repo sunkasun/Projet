@@ -906,7 +906,7 @@ class Tree:
                         self.pricer_parameters)
         name: str = "European without div ≈ BS"
         if opt.is_american() or mkt.dividend != 0 or mkt.vol <= 1e-8:
-            return {"name": name, "value": "euro sans div uniquement",
+            return {"name": name, "value": "euro without div only",
                     "verdict": "N/A", "detail": ""}
         try:
             bs: float = Black_Scholes(pr, mkt, opt).pricing_BS()
@@ -930,7 +930,7 @@ class Tree:
         name: str = "Put-call parity : C − P = S₀ − K·e^(−rT)"
         if opt.is_american() or mkt.dividend != 0 or mkt.vol <= 1e-8:
             return {"name": "Put-call parity",
-                    "value": "euro sans div uniquement",
+                    "value": "euro without div only",
                     "verdict": "N/A", "detail": ""}
         try:
             c: float = self._price_variant(call_put="call")
@@ -956,7 +956,7 @@ class Tree:
         if not (mkt.dividend == 0 and mkt.rate > 0
                 and opt.call_put == "call"):
             return {"name": name,
-                    "value": "call sans div et r>0 uniquement",
+                    "value": "call without div and r>0 only",
                     "verdict": "N/A", "detail": ""}
         try:
             a: float = self._price_variant(eur_am="american")
@@ -976,7 +976,7 @@ class Tree:
         """A_put ≥ E_put (prime d'exercice ≥ 0)."""
         opt = self.option_data
         if opt.call_put != "put":
-            return {"name": "A_put ≥ E_put", "value": "put uniquement",
+            return {"name": "A_put ≥ E_put", "value": "put only",
                     "verdict": "N/A", "detail": ""}
         try:
             a: float = self._price_variant(eur_am="american")
@@ -984,8 +984,8 @@ class Tree:
             diff: float = a - e
             verdict: str = "PASS" if diff >= -1e-8 else "FAIL"
             return {"name": "A_put ≥ E_put",
-                    "value": f"A={a:.6f} E={e:.6f} prime={diff:.2e}",
-                    "verdict": verdict, "detail": "prime ≥ 0"}
+                    "value": f"A={a:.6f} E={e:.6f} premium={diff:.2e}",
+                    "verdict": verdict, "detail": "≥ 0"}
         except Exception as e:
             return {"name": "A_put ≥ E_put", "value": str(e),
                     "verdict": "N/A", "detail": ""}
@@ -996,7 +996,7 @@ class Tree:
         name: str = "A_call ≥ E_call (div > 0)"
         if not (mkt.dividend > 0 and opt.call_put == "call"):
             return {"name": "A_call ≥ E_call (div>0)",
-                    "value": "call avec dividende uniquement",
+                    "value": "call with dividend only",
                     "verdict": "N/A", "detail": ""}
         try:
             a: float = self._price_variant(eur_am="american")
@@ -1005,9 +1005,9 @@ class Tree:
             verdict: str = "PASS" if diff >= -1e-8 else "FAIL"
             detail: str = "exercise just before ex-div"
             if abs(diff) < 1e-8:
-                detail += " — premium = 0 (call OTM avant ex-div ?)"
+                detail += " — premium = 0 (call OTM before ex-div ?)"
             return {"name": name,
-                    "value": f"A={a:.6f} E={e:.6f} prime={diff:.2e}",
+                    "value": f"A={a:.6f} E={e:.6f} premium={diff:.2e}",
                     "verdict": verdict, "detail": detail}
         except Exception as e:
             return {"name": "A_call ≥ E_call (div>0)", "value": str(e),
