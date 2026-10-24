@@ -177,8 +177,15 @@ class Black_Scholes:
         self._plot_slopes_axis(ax2, BS, tree, diff, strikes)
         ax1.legend(loc='upper left')
         ax2.legend(loc='upper right')
-        plt.title(f"Prices and slopes vs. strike — trinomial tree with "
-                  f"{self.pricer_parameters.nb_steps} steps")
+        mode_str = "Binomial"
+        if getattr(self.pricer_parameters, "tree_mode", "") == "trinomial_everywhere":
+            mode_str = "Trinomial"
+        elif self.market_data.dividend > 0:
+            mode_str = "Binomial with div switch"
+        plt.title(
+            f"Prices and slopes vs. strike — {mode_str} tree with "
+            f"{self.pricer_parameters.nb_steps} steps"
+        )
         plt.tight_layout()
         return fig
 
