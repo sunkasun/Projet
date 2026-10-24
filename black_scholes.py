@@ -160,30 +160,30 @@ class Black_Scholes:
             (price_tree - tree_dict['Prices Tree'][i - 1]) / delta_K)
         BS["Slope BS"].append((price_BS - BS['Prices BS'][i - 1]) / delta_K)
 
-    def plot_slopes(self, BS: Dict[str, List[float]],
+        def plot_slopes(self, BS: Dict[str, List[float]],
                     tree: Dict[str, List[float]],
                     diff: List[float],
                     strikes: List[int]) -> plt.Figure:
-        """Construit la figure prix/pentes vs strike."""
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-        ax1.plot(strikes, BS["Prices BS"], color='red',
-                 label='Price B&S', linestyle='-')
-        ax1.plot(strikes, tree["Prices Tree"], color='green',
-                 label='Price trinomial tree', linestyle='-')
-        ax1.set_xlabel("Strike price")
-        ax1.set_ylabel("Option price", color='black')
-        ax1.tick_params(axis='y', labelcolor='black')
-        ax2 = ax1.twinx()
-        self._plot_slopes_axis(ax2, BS, tree, diff, strikes)
-        ax1.legend(loc='upper left')
-        ax2.legend(loc='upper right')
         mode_str = "Binomial"
         if getattr(self.pricer_parameters, "tree_mode", "") == "trinomial_everywhere":
             mode_str = "Trinomial"
         elif self.market_data.dividend > 0:
             mode_str = "Binomial with div switch"
+        tree_label = f"{mode_str} tree"
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        ax1.plot(strikes, BS["Prices BS"], color='red',
+                 label='Price B&S', linestyle='-')
+        ax1.plot(strikes, tree["Prices Tree"], color='green',
+                 label=f'Price {tree_label}', linestyle='-')
+        ax1.set_xlabel("Strike price")
+        ax1.set_ylabel("Option price", color='black')
+        ax1.tick_params(axis='y', labelcolor='black')
+        ax2 = ax1.twinx()
+        self._plot_slopes_axis(ax2, BS, tree, diff, strikes, tree_label)
+        ax1.legend(loc='upper left')
+        ax2.legend(loc='upper right')
         plt.title(
-            f"Prices and slopes vs. strike — {mode_str} tree with "
+            f"Prices and slopes vs. strike — {tree_label} with "
             f"{self.pricer_parameters.nb_steps} steps"
         )
         plt.tight_layout()
@@ -193,12 +193,12 @@ class Black_Scholes:
                           BS: Dict[str, List[float]],
                           tree: Dict[str, List[float]],
                           diff: List[float],
-                          strikes: List[int]) -> None:
-        """Trace les pentes et différences sur l'axe secondaire."""
+                          strikes: List[int],
+                          tree_label: str) -> None:
         ax2.plot(strikes[1:], BS["Slope BS"], color='red',
                  label='Slope B&S', linestyle='--')
         ax2.plot(strikes[1:], tree["Slope Tree"], color='green',
-                 label='Slope trinomial tree', linestyle='--')
+                 label=f'Slope {tree_label}', linestyle='--')
         ax2.plot(strikes, diff, color='purple',
                  label='Tree − B&S', linestyle=':')
         ax2.set_ylabel('Slopes and differences', color='black')
