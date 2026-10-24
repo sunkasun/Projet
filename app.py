@@ -422,7 +422,7 @@ def _render_checkboxes_standard_first(ctx: Dict[str, Any]) -> Dict[str, bool]:
                  "visible)."),
         "exec_time": st.checkbox(
             "Study execution time", disabled=ctx["disable_sweeps"],
-            help="Disabled if N < 10 or N > 1000."),
+            help="Disabled if N < 10 or N > 10000."),
     }
 
 
@@ -431,15 +431,15 @@ def _render_checkboxes_standard_second(ctx: Dict[str, Any]) -> Dict[str, bool]:
     return {
         "pruning_compare": st.checkbox(
             "Compare pruning ON vs OFF", disabled=ctx["disable_sweeps"],
-            help="Disabled if N < 10 or N > 1000."),
+            help="Disabled if N < 10 or N > 10000."),
         "conv": st.checkbox(
             "Study convergence with B&S",
             disabled=not ctx["bs_available"] or ctx["disable_sweeps"],
-            help="Disabled if N < 10 or N > 1000."),
+            help="Disabled if N < 10 or N > 10000."),
         "compare_methods": st.checkbox(
             "Backward vs. recursive comparison",
             disabled=ctx["disable_sweeps"],
-            help="Disabled if N < 10 or N > 1000."),
+            help="Disabled if N < 10 or N > 10000."),
     }
 
 
@@ -488,7 +488,7 @@ def _render_flag_warnings(flags: Dict[str, bool],
                    "options or when a discrete dividend is present.")
     if ctx["disable_sweeps"]:
         st.caption(f"⚠️ Sweep studies are disabled because N={ctx['N']} "
-                   "is too small (<10) or too large (>1000).")
+                   "is too small (<10) or too large (>10000).")
 
 
 def _render_study_captions(flags: Dict[str, bool],
@@ -530,7 +530,7 @@ def _context_derived_bounds(K: float) -> Tuple[int, int]:
 def _context_build_dict(ctx_parts: Dict[str, Any]) -> Dict[str, Any]:
     """Assemble le dict de contexte final."""
     ctx: Dict[str, Any] = dict(ctx_parts)
-    ctx["disable_sweeps"] = (ctx["N"] < 10 or ctx["N"] > 1000)
+    ctx["disable_sweeps"] = (ctx["N"] < 10 or ctx["N"] > 10000)
     ctx["max_display"] = min(ctx["N"], 10)
     return ctx
 
