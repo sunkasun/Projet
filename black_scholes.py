@@ -160,7 +160,7 @@ class Black_Scholes:
             (price_tree - tree_dict['Prices Tree'][i - 1]) / delta_K)
         BS["Slope BS"].append((price_BS - BS['Prices BS'][i - 1]) / delta_K)
 
-        def plot_slopes(self, BS: Dict[str, List[float]],
+    def plot_slopes(self, BS: Dict[str, List[float]],
                     tree: Dict[str, List[float]],
                     diff: List[float],
                     strikes: List[int]) -> plt.Figure:
