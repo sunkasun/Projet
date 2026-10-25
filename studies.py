@@ -173,3 +173,128 @@ def price_vs_ex_div_date(
     ax.legend(loc='best')
     plt.tight_layout()
     return fig, days_after, prices_switch, prices_trinom, price_no_div
+
+def greeks_profiles(
+    pricer_parameters: PricerParameters,
+    market_data: Market,
+    option_data: Option,
+    nb_points: int = 15,
+) -> plt.Figure:
+    """
+    Trace les Greeks (Tree vs B&S) en fonction de leur paramètre principal.
+    Retourne une figure 2x2.
+    """
+    from greeks import GreeksTree, GreeksBS, Parameters, price_tree_one_dim
+    import copy
+
+    # 1. Récupération des shifts adaptatifs
+    s0 = market_data.s0
+    vol = market_data.vol
+    N = pricer_parameters.nb_steps
+    scale = (100.0 / max(N, 10)) ** 0.25
+    h_s = min(0.25 * s0, max(0.01 * s0, 0.05 * s0 * scale))
+    h_vol = min(0.50 * vol, max(0.005, 0.15 * vol * scale))
+    
+    # Helper pour calculer les grecs sur un point
+    def compute_greeks_at(mkt, opt, prm):
+        gt = GreeksTree(prm, mkt, opt)
+        # On doit lui passer les shifts manuellement
+        g_tree = {
+            "Delta": gt.delta(h_s),
+            "Gamma": gt.gamma(h_s),
+            "Vega": gt.vega(h_vol),
+            "Vomma": gt.vomma(h_vol),
+            "Rho": gt.rho(0.01),
+            "Theta": gt.theta(1)
+        }
+        
+        bs_ok = (not opt.is_american()) and mkt.dividend == 0
+        g_bs = None
+        if bs_ok:
+            gbs = GreeksBS(prm, mkt, opt)
+            g_bs = {
+                "Delta": gbs.delta(), "Gamma": gbs.gamma(),
+                "Vega": gbs.vega(), "Vomma": gbs.vomma(),
+                "Rho": gbs.rho(), "Theta": gbs.theta()
+            }
+        return g_tree, g_bs
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    ax_d, ax_v, ax_r, ax_t = axes.flatten()
+    
+    # --- 1. Delta & Gamma vs S0 ---
+    s0_vals = np.linspace(0.8 * s0, 1.2 * s0, nb_points)
+    d_t, d_b, g_t, g_b = [], [], [], []
+    
+    for s in s0_vals:
+        m = Market(s, market_data.rate, market_data.vol, market_data.dividend, market_data.ex_div_date)
+        o = Option(option_data.K, option_data.maturity, option_data.call_put, option_data.eur_am)
+        gt, gb = compute_greeks_at(m, o, pricer_parameters)
+        d_t.append(gt["Delta"]); g_t.append(gt["Gamma"])
+        if gb: d_b.append(gb["Delta"]); g_b.append(gb["Gamma"])
+        
+    ax_d.plot(s0_vals, d_t, label="Delta Tree", color="steelblue", lw=2)
+    ax_d.plot(s0_vals, g_t, label="Gamma Tree", color="orange", lw=2)
+    if d_b:
+        ax_d.plot(s0_vals, d_b, label="Delta BS", color="steelblue", ls="--")
+        ax_d.plot(s0_vals, g_b, label="Gamma BS", color="orange", ls="--")
+    ax_d.set_title("Delta & Gamma vs S₀")
+    ax_d.legend(); ax_d.grid(True, alpha=0.3)
+
+    # --- 2. Vega & Vomma vs Volatility ---
+    vol_vals = np.linspace(0.5 * vol, 1.5 * vol, nb_points)
+    v_t, v_b, vm_t, vm_b = [], [], [], []
+    
+    for v in vol_vals:
+        m = Market(market_data.s0, market_data.rate, v, market_data.dividend, market_data.ex_div_date)
+        o = Option(option_data.K, option_data.maturity, option_data.call_put, option_data.eur_am)
+        gt, gb = compute_greeks_at(m, o, pricer_parameters)
+        v_t.append(gt["Vega"]); vm_t.append(gt["Vomma"])
+        if gb: v_b.append(gb["Vega"]); vm_b.append(gb["Vomma"])
+        
+    ax_v.plot(vol_vals, v_t, label="Vega Tree", color="green", lw=2)
+    ax_v.plot(vol_vals, vm_t, label="Vomma Tree", color="red", lw=2)
+    if v_b:
+        ax_v.plot(vol_vals, v_b, label="Vega BS", color="green", ls="--")
+        ax_v.plot(vol_vals, vm_b, label="Vomma BS", color="red", ls="--")
+    ax_v.set_title("Vega & Vomma vs Volatility")
+    ax_v.legend(); ax_v.grid(True, alpha=0.3)
+
+    # --- 3. Rho vs Interest Rate ---
+    r_vals = np.linspace(-0.05, 0.10, nb_points)
+    r_t, r_b = [], []
+    
+    for r in r_vals:
+        m = Market(market_data.s0, r, market_data.vol, market_data.dividend, market_data.ex_div_date)
+        o = Option(option_data.K, option_data.maturity, option_data.call_put, option_data.eur_am)
+        gt, gb = compute_greeks_at(m, o, pricer_parameters)
+        r_t.append(gt["Rho"])
+        if gb: r_b.append(gb["Rho"])
+        
+    ax_r.plot(r_vals * 100, r_t, label="Rho Tree", color="purple", lw=2)
+    if r_b: ax_r.plot(r_vals * 100, r_b, label="Rho BS", color="purple", ls="--")
+    ax_r.set_title("Rho vs Interest Rate (%)")
+    ax_r.legend(); ax_r.grid(True, alpha=0.3)
+
+    # --- 4. Theta vs Time to Maturity ---
+    # On fait varier la maturité de 0.2*T à 1.5*T
+    T_base = (option_data.maturity - pricer_parameters.pricing_date).days
+    t_vals = np.linspace(max(1, int(0.2 * T_base)), int(1.5 * T_base), nb_points)
+    th_t, th_b = [], []
+    
+    for days in t_vals:
+        mat_date = pricer_parameters.pricing_date + dt.timedelta(days=int(days))
+        m = Market(market_data.s0, market_data.rate, market_data.vol, market_data.dividend, market_data.ex_div_date)
+        o = Option(option_data.K, mat_date, option_data.call_put, option_data.eur_am)
+        gt, gb = compute_greeks_at(m, o, pricer_parameters)
+        th_t.append(gt["Theta"])
+        if gb: th_b.append(gb["Theta"])
+        
+    ax_t.plot(t_vals / 365.0, th_t, label="Theta Tree", color="brown", lw=2)
+    if th_b: ax_t.plot(t_vals / 365.0, th_b, label="Theta BS", color="brown", ls="--")
+    ax_t.set_title("Theta vs Time to Maturity (Years)")
+    ax_t.legend(); ax_t.grid(True, alpha=0.3)
+
+    fig.suptitle("Greeks Profiles: Tree (solid) vs Black-Scholes (dashed)", fontsize=14)
+    plt.tight_layout()
+    return fig
