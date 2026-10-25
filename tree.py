@@ -107,37 +107,50 @@ class Tree:
             return 0
         return int(round(np.log(expected / forward) / log_alpha))
 
-    def _find_or_create_child(self, price: float, current_ref: list, next_date: dt.datetime) -> Node:
+    def _find_or_create_child(self, price: float, current_ref: list,
+                              next_date: dt.datetime) -> Node:
+        # --- Cas 1 : aucun enfant n'a encore été créé à ce niveau ---
+        if current_ref[0] is None:
+            child = Node(price, self, next_date)
+            self.counters["nodes_created"] += 1
+            current_ref[0] = child
+            return child
+
         current = current_ref[0]
-        # Descendre au plus bas
-        while current is not None and current.down_node is not None:
+        # Descendre au nœud le plus bas
+        while current.down_node is not None:
             current = current.down_node
-            
-        # Chercher la position
+
+        # Chercher la position d'insertion (premier nœud >= price)
         while current is not None and current.und_price < price:
             current = current.up_node
-            
+
+        # --- Cas 2 : le nœud existe déjà → fusion ---
         if current is not None and abs(current.und_price - price) < 1e-9 * max(abs(price), 1.0):
             current_ref[0] = current
+            self.counters["merges"] = self.counters.get("merges", 0) + 1
             return current
-            
+
+        # --- Cas 3 : créer et insérer le nouveau nœud ---
         child = Node(price, self, next_date)
         self.counters["nodes_created"] += 1
-        
+
         if current is None:
+            # Insérer tout en haut : chercher le nœud le plus haut actuel
             highest = current_ref[0]
             while highest.up_node is not None:
                 highest = highest.up_node
             highest.up_node = child
             child.down_node = highest
         else:
+            # Insérer juste en dessous de current
             lower = current.down_node
             child.up_node = current
             child.down_node = lower
             current.down_node = child
             if lower is not None:
                 lower.up_node = child
-                
+
         current_ref[0] = child
         return child
 
