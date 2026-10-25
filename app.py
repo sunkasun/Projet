@@ -15,7 +15,7 @@ from black_scholes import Black_Scholes
 from greeks import GreeksTree, GreeksBS
 from timing import ExecutionTime
 from tree import Tree
-from studies import american_european_gap_vs_rate, price_vs_ex_div_date
+from studies import american_european_gap_vs_rate, price_vs_ex_div_date, greeks_profiles
 
 
 DEFAULTS = {
@@ -418,6 +418,7 @@ def main() -> None:
         compute_amer_vs_euro = st.checkbox("American vs. European vs. rate")
         compute_avg_value = st.checkbox("Average option value by dates")
         compute_price_vs_exdiv = st.checkbox("Price vs. ex-div date")
+        compute_greeks_profile = st.checkbox("Greeks Profiles (Tree vs BS)", disabled=not bs_available)
         compute_debug = st.checkbox("Debug — tree construction", key="debug")
         show_tree = st.checkbox("Show tree")
 
@@ -529,6 +530,11 @@ def main() -> None:
         if compute_price_vs_exdiv:
             st.markdown("**Price vs. ex-div date**")
             price_vs_exdiv_ph = st.empty(); price_vs_exdiv_ph.markdown(WAITING_MD)
+
+        greeks_profile_ph = None
+        if compute_greeks_profile:
+            st.markdown("**Greeks Profiles**")
+            greeks_profile_ph = st.empty(); greeks_profile_ph.markdown(WAITING_MD)
 
         debug_ph = None
         if compute_debug:
@@ -727,6 +733,19 @@ def main() -> None:
                     st.pyplot(results["price_vs_exdiv_fig"])
                     st.caption(f"⏱ {fmt_time(timings['price_vs_exdiv'])}")
 
+        if compute_greeks_profile:
+            t0 = time.perf_counter()
+            try:
+                fig = greeks_profiles(pricer, market, option, nb_points=15)
+                results["greeks_profile_fig"] = fig; plt.close("all")
+            except Exception as e:
+                st.error(f"Greeks profiles failed: {e}")
+            timings["greeks_profile"] = time.perf_counter() - t0
+            if "greeks_profile_fig" in results:
+                with greeks_profile_ph.container():
+                    st.pyplot(results["greeks_profile_fig"])
+                    st.caption(f"⏱ {fmt_time(timings['greeks_profile'])}")
+
         results["_timings"] = timings
         results["_params_snapshot"] = snap
         st.session_state.results = results
@@ -812,6 +831,11 @@ def main() -> None:
             st.markdown("**Price vs. ex-div date**")
             st.pyplot(results["price_vs_exdiv_fig"])
             if "price_vs_exdiv" in timings: st.caption(f"⏱ {fmt_time(timings['price_vs_exdiv'])}")
+
+        if "greeks_profile_fig" in results:
+            st.markdown("**Greeks Profiles**")
+            st.pyplot(results["greeks_profile_fig"])
+            if "greeks_profile" in timings: st.caption(f"⏱ {fmt_time(timings['greeks_profile'])}")
 
         if st.session_state.get("debug") and st.session_state.debug_tree is not None:
             st.markdown("**Debug — tree construction**")
