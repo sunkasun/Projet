@@ -86,130 +86,174 @@ class Tree:
         return E_pur
 
     # ==================================================================
+    def _forward_from(self, date: dt.datetime, S_start: float) -> float:
+        r = self.market_data.rate
+        D = self.market_data.dividend
+        ex_div = self.market_data.ex_div_date
+        dt_ = self.delta_t
+        E_pur = S_start * np.exp(r * dt_)
+        if D > 0 and (date < ex_div <= date + dt.timedelta(days=dt_ * 365)):
+            tau_days = (ex_div - date).total_seconds() / 86400
+            tau_ratio = tau_days / (dt_ * 365) if dt_ * 365 > 0 else 1.0
+            tau_ratio = max(0.0, min(1.0, tau_ratio))
+            return E_pur - D * np.exp(r * dt_ * (1.0 - tau_ratio))
+        return E_pur
+
+    def _nearest_grid_position(self, expected: float, forward: float, alpha: float) -> int:
+        if expected <= 0 or forward <= 0:
+            return 0
+        log_alpha = np.log(alpha) if abs(alpha - 1.0) > 1e-10 else 0.0
+        if abs(log_alpha) < 1e-12:
+            return 0
+        return int(round(np.log(expected / forward) / log_alpha))
+
+    def _find_or_create_child(self, price: float, current_ref: list, next_date: dt.datetime) -> Node:
+        current = current_ref[0]
+        # Descendre au plus bas
+        while current is not None and current.down_node is not None:
+            current = current.down_node
+            
+        # Chercher la position
+        while current is not None and current.und_price < price:
+            current = current.up_node
+            
+        if current is not None and abs(current.und_price - price) < 1e-9 * max(abs(price), 1.0):
+            current_ref[0] = current
+            return current
+            
+        child = Node(price, self, next_date)
+        self.counters["nodes_created"] += 1
+        
+        if current is None:
+            highest = current_ref[0]
+            while highest.up_node is not None:
+                highest = highest.up_node
+            highest.up_node = child
+            child.down_node = highest
+        else:
+            lower = current.down_node
+            child.up_node = current
+            child.down_node = lower
+            current.down_node = child
+            if lower is not None:
+                lower.up_node = child
+                
+        current_ref[0] = child
+        return child
+
+    def _branch_parent(self, parent: Node, E_trunk: float, alpha: float, is_tri: bool, current_ref: list, next_date: dt.datetime, ignore_pruning: bool):
+        E, _ = parent.forward_variance()
+        k_i = self._nearest_grid_position(E, E_trunk, alpha)
+        
+        parent.next_up = None
+        parent.next_mid = None
+        parent.next_down = None
+        
+        if self.pricer_parameters.pruning and parent.p_node < self.pricer_parameters.p_min and not ignore_pruning:
+            if is_tri:
+                parent.next_mid = self._find_or_create_child(E_trunk * (alpha ** k_i), current_ref, next_date)
+                parent.p_up, parent.p_mid, parent.p_down = 0.0, 1.0, 0.0
+            else:
+                if k_i > 0:
+                    parent.next_down = self._find_or_create_child(E_trunk * (alpha ** (k_i - 1)), current_ref, next_date)
+                    parent.p_up, parent.p_mid, parent.p_down = 0.0, 0.0, 1.0
+                else:
+                    parent.next_up = self._find_or_create_child(E_trunk * (alpha ** (k_i + 1)), current_ref, next_date)
+                    parent.p_up, parent.p_mid, parent.p_down = 1.0, 0.0, 0.0
+            return
+
+        if is_tri:
+            parent.next_mid = self._find_or_create_child(E_trunk * (alpha ** k_i), current_ref, next_date)
+            parent.next_up = self._find_or_create_child(E_trunk * (alpha ** (k_i + 1)), current_ref, next_date)
+            parent.next_down = self._find_or_create_child(E_trunk * (alpha ** (k_i - 1)), current_ref, next_date)
+        else:
+            parent.next_up = self._find_or_create_child(E_trunk * (alpha ** (k_i + 1)), current_ref, next_date)
+            parent.next_down = self._find_or_create_child(E_trunk * (alpha ** (k_i - 1)), current_ref, next_date)
+
     def make_tree(self) -> None:
         t0_total = time.perf_counter()
-
-        self.root = TruncNode(self.market_data.s0, self,
-                              self.pricer_parameters.pricing_date, None)
+        self.root = TruncNode(self.market_data.s0, self, self.pricer_parameters.pricing_date, None)
         self.root.p_node = 1.0
-        self.counters["nodes_created"] += 1
+        self.counters["nodes_created"] = 1
         self.nodes_by_date = [[self.root]]
         self.step_nodes = [1]
         self.step_candidates = [1]
         self.step_times = [0.0]
         self.step_modes = ["ROOT"]
 
-        current = [self.root]
+        current_parents = [self.root]
         trunk_S = self.market_data.s0
         current_date = self.pricer_parameters.pricing_date
-        p_min = self.pricer_parameters.p_min if self.pricer_parameters.pruning else 0.0
+        
+        # On a besoin de connaître le tronc à chaque étape. 
+        # Le tronc est le nœud dont la position k est la plus proche de 0.
+        # Dans current_parents, on le repère par son prix le plus proche de E_trunk.
 
         for step in range(self.nb_steps):
             t0 = time.perf_counter()
-            is_tri = current[0].is_trinomial_step()
+            is_tri = current_parents[0].is_trinomial_step()
             mode_str = "TRI" if is_tri else "BIN"
             next_date = current_date + dt.timedelta(days=self.delta_t * 365)
-
-            if is_tri:
-                a = self.alpha_tri if self.tree_mode == "trinomial_everywhere" \
-                    else self.alpha_bin
-            else:
-                a = self.sqrt_alpha_bin
-
+            alpha = (self.alpha_tri if self.tree_mode == "trinomial_everywhere" else self.alpha_bin) if is_tri else self.sqrt_alpha_bin
+            
             E_trunk = self._forward_from(current_date, trunk_S)
-            log_a = np.log(a) if abs(a - 1.0) > 1e-10 else 0.0
-
-            # --- k de chaque parent ---
-            parent_k = []
-            for node in current:
-                E_i, _ = node.forward_variance()
-                if E_i <= 0:
-                    E_i = 1e-12
-                k_i = 0 if abs(log_a) < 1e-12 else int(round(np.log(E_i / E_trunk) / log_a))
-                parent_k.append(k_i)
-
-            # --- k atteints (pruning-aware) ---
-            reached_k = set()
-            for idx, node in enumerate(current):
-                k_i = parent_k[idx]
-                if node.p_node < p_min:
-                    # Parent mort → collapse sur son mid (1 seul enfant)
-                    reached_k.add(k_i)
-                else:
-                    if is_tri:
-                        reached_k.update([k_i - 1, k_i, k_i + 1])
-                    else:
-                        reached_k.update([k_i - 1, k_i + 1])
-
-            # --- Fallback : limite par écarts-types ---
-            if self.pricer_parameters.pruning and reached_k:
-                half_w = int(6 * np.sqrt(step + 1) /
-                             (1.0 if not is_tri else np.sqrt(3)))
-                half_w = max(half_w, 5)
-                reached_k = {k for k in reached_k if abs(k) <= half_w}
-
-            self.step_candidates.append(len(reached_k))
-
-            # --- Création des nœuds ---
-            sorted_k = sorted(reached_k)
-            k_to_node = {}
-            next_nodes = []
-            for k in sorted_k:
-                price = E_trunk * (a ** k)
-                node = Node(price, self, next_date)
-                k_to_node[k] = node
-                next_nodes.append(node)
+            
+            if abs(alpha - 1.0) < 1e-10:
+                child = Node(E_trunk, self, next_date)
                 self.counters["nodes_created"] += 1
+                self.root.next_up = self.root.next_mid = self.root.next_down = child
+                self.nodes_by_date.append([child])
+                self.step_nodes.append(1)
+                self.step_times.append(time.perf_counter() - t0)
+                self.step_modes.append(mode_str)
+                current_parents = [child]
+                trunk_S = E_trunk
+                current_date = next_date
+                continue
 
-            # --- Liaison parents → enfants ---
-            for idx, parent in enumerate(current):
-                k_i = parent_k[idx]
-                if parent.p_node < p_min:
-                    # Mode pruning : on force 1 seul enfant + proba 1
-                    if is_tri:
-                        parent.next_mid = k_to_node.get(k_i)
-                        parent.next_up = parent.next_down = None
-                        parent.p_up = parent.p_down = 0.0
-                        parent.p_mid = 1.0
-                    else:
-                        # Binomial : vers l'intérieur de l'arbre
-                        if k_i > 0:
-                            parent.next_down = k_to_node.get(k_i - 1)
-                            parent.next_up = parent.next_mid = None
-                            parent.p_up = parent.p_mid = 0.0
-                            parent.p_down = 1.0
-                        else:
-                            parent.next_up = k_to_node.get(k_i + 1)
-                            parent.next_mid = parent.next_down = None
-                            parent.p_mid = parent.p_down = 0.0
-                            parent.p_up = 1.0
-                else:
-                    if is_tri:
-                        parent.next_mid = k_to_node.get(k_i)
-                        parent.next_up = k_to_node.get(k_i + 1)
-                        parent.next_down = k_to_node.get(k_i - 1)
-                    else:
-                        parent.next_mid = None
-                        parent.next_up = k_to_node.get(k_i + 1)
-                        parent.next_down = k_to_node.get(k_i - 1)
+            current_ref = [None]
+            
+            # 1. Identifier le tronc parent
+            # C'est le nœud dont le forward E_i est le plus proche de E_trunk
+            trunk_parent = min(current_parents, key=lambda n: abs(n.forward_variance()[0] - E_trunk))
+            
+            # 2. Brancher le tronc
+            self._branch_parent(trunk_parent, E_trunk, alpha, is_tri, current_ref, next_date, ignore_pruning=True)
+            
+            # 3. Remonter
+            parent = trunk_parent.up_node
+            while parent is not None:
+                self._branch_parent(parent, E_trunk, alpha, is_tri, current_ref, next_date, ignore_pruning=False)
+                parent = parent.up_node
+                
+            # 4. Descendre
+            parent = trunk_parent.down_node
+            while parent is not None:
+                self._branch_parent(parent, E_trunk, alpha, is_tri, current_ref, next_date, ignore_pruning=False)
+                parent = parent.down_node
 
-            # --- Liens frères ---
-            for i in range(1, len(next_nodes)):
-                next_nodes[i].down_node = next_nodes[i - 1]
-                next_nodes[i - 1].up_node = next_nodes[i]
-
-            # --- Probabilités + propagation ---
-            for node in current:
-                if node.p_node >= p_min:
-                    node.probas()
+            # 5. Reconstruire la liste des nœuds du prochain niveau
+            next_nodes = []
+            curr = current_ref[0]
+            if curr is not None:
+                while curr.down_node is not None:
+                    curr = curr.down_node
+                while curr is not None:
+                    next_nodes.append(curr)
+                    curr = curr.up_node
+                    
+            # 6. Probabilités
+            for node in current_parents:
+                node.probas()
                 node.next_nodes_probas()
 
+            self.step_candidates.append(len(next_nodes))
             self.nodes_by_date.append(next_nodes)
             self.step_nodes.append(len(next_nodes))
             self.step_times.append(time.perf_counter() - t0)
             self.step_modes.append(mode_str)
 
-            current = next_nodes
+            current_parents = next_nodes
             trunk_S = E_trunk
             current_date = next_date
 
