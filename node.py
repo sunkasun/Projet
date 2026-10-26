@@ -34,8 +34,6 @@ class Node:
         sigma = self.tree.market_data.vol
         dt_ = self.tree.delta_t
         S = self.und_price
-        q = self.tree.market_data.continuous_yield
-        mu = r - q
 
         if self.dividend_period():
             tau_days = (self.tree.market_data.ex_div_date - self.date).total_seconds() / 86400
@@ -43,12 +41,12 @@ class Node:
             tau_ratio = tau_days / dt_days if dt_days > 1e-15 else 1.0
             tau_ratio = max(0.0, min(1.0, tau_ratio))
             D = self.tree.market_data.dividend
-            E = S * np.exp(mu * dt_) - D * np.exp(r * dt_ * (1.0 - tau_ratio))
+            E = S * np.exp(r * dt_) - D * np.exp(r * dt_ * (1.0 - tau_ratio))
             V = (S - (1.0 - tau_ratio) * D) ** 2 \
-                * np.exp(2 * mu * dt_) * (np.exp(sigma ** 2 * dt_) - 1)
+                * np.exp(2 * r * dt_) * (np.exp(sigma ** 2 * dt_) - 1)
         else:
-            E = S * np.exp(mu * dt_)
-            V = S ** 2 * np.exp(2 * mu * dt_) * (np.exp(sigma ** 2 * dt_) - 1)
+            E = S * np.exp(r * dt_)
+            V = S ** 2 * np.exp(2 * r * dt_) * (np.exp(sigma ** 2 * dt_) - 1)
         return E, V
 
     def child_specs(self) -> List[Tuple[float, str]]:
