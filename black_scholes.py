@@ -19,7 +19,6 @@ class Black_Scholes:
         self.option_data: Option = option_data
         self.market_data: Market = market_data
         self.T: float = (option_data.maturity - pricer_parameters.pricing_date).days / 365
-        self.q = getattr(market_data, "continuous_yield", 0.0)
 
         # FIX : cas dégénéré (vol≈0 ou T≈0) → on évite la division par zéro.
         # On marque l'objet et on laisse pricing_BS() retourner l'intrinsèque.
@@ -30,14 +29,14 @@ class Black_Scholes:
             self.d2 = 0.0
         else:
             self.d1 = ((np.log(self.market_data.s0 / self.option_data.K) +
-                        (self.market_data.rate - self.q + 0.5 * self.market_data.vol ** 2) * self.T)
+                        (self.market_data.rate + 0.5 * self.market_data.vol ** 2) * self.T)
                        / (self.market_data.vol * np.sqrt(self.T)))
             self.d2 = self.d1 - self.market_data.vol * np.sqrt(self.T)
 
     def pricing_BS(self) -> float:
         # FIX : cas dégénéré → payoff déterministe actualisé
         if self._degenerate:
-            fwd = self.market_data.s0 * np.exp((self.market_data.rate - self.q) * self.T)
+            fwd = self.market_data.s0 * np.exp(self.market_data.rate * self.T)
             if self.option_data.call_put == "call":
                 intrinsic = max(fwd - self.option_data.K, 0.0)
             else:
@@ -45,11 +44,11 @@ class Black_Scholes:
             return intrinsic * np.exp(-self.market_data.rate * self.T)
 
         if self.option_data.call_put == "call":
-            return (self.market_data.s0 * np.exp(-self.q * self.T) * norm.cdf(self.d1) 
-                    - self.option_data.K * np.exp(-self.market_data.rate * self.T) * norm.cdf(self.d2))
+            return (self.market_data.s0 * norm.cdf(self.d1) - self.option_data.K
+                    * np.exp(-self.market_data.rate * self.T) * norm.cdf(self.d2))
         else:
-            return (self.option_data.K * np.exp(-self.market_data.rate * self.T) * norm.cdf(-self.d2) 
-                    - self.market_data.s0 * np.exp(-self.q * self.T) * norm.cdf(-self.d1))
+            return (self.option_data.K * np.exp(-self.market_data.rate * self.T) *
+                    norm.cdf(-self.d2) - self.market_data.s0 * norm.cdf(-self.d1))
 
     def convergence_BS(self, nb_steps_max: int, method: str = "backward") -> List[float]:
         differences: List[float] = []
