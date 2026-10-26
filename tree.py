@@ -65,234 +65,80 @@ class Tree:
         self.build_time = 0.0
         self.backward_time = 0.0
         self.price_time = 0.0
-        self.recursion_failed = False    # <-- NOUVEAU
-
-    def _forward_from(self, date: dt.datetime, S_start: float) -> float:
-        """
-        Calcule le forward du tronc partant de S_start à `date` sur un pas
-        Δt, en intégrant le dividende s'il tombe dans (date, date+Δt].
-        """
-        r = self.market_data.rate
-        D = self.market_data.dividend
-        ex_div = self.market_data.ex_div_date
-        dt_ = self.delta_t
-
-        E_pur = S_start * np.exp(r * dt_)
-        if D > 0 and (date < ex_div <= date + dt.timedelta(days=dt_ * 365)):
-            tau_days = (ex_div - date).total_seconds() / 86400
-            tau_ratio = tau_days / (dt_ * 365)
-            tau_ratio = max(0.0, min(1.0, tau_ratio))
-            return E_pur - D * np.exp(r * dt_ * (1.0 - tau_ratio))
-        return E_pur
-
-    # ==================================================================
-    def _forward_from(self, date: dt.datetime, S_start: float) -> float:
-        r = self.market_data.rate
-        D = self.market_data.dividend
-        ex_div = self.market_data.ex_div_date
-        dt_ = self.delta_t
-        E_pur = S_start * np.exp(r * dt_)
-        if D > 0 and (date < ex_div <= date + dt.timedelta(days=dt_ * 365)):
-            tau_days = (ex_div - date).total_seconds() / 86400
-            tau_ratio = tau_days / (dt_ * 365) if dt_ * 365 > 0 else 1.0
-            tau_ratio = max(0.0, min(1.0, tau_ratio))
-            return E_pur - D * np.exp(r * dt_ * (1.0 - tau_ratio))
-        return E_pur
-
-    def _nearest_grid_position(self, expected: float, forward: float, alpha: float) -> int:
-        if expected <= 0 or forward <= 0:
-            return 0
-        log_alpha = np.log(alpha) if abs(alpha - 1.0) > 1e-10 else 0.0
-        if abs(log_alpha) < 1e-12:
-            return 0
-        return int(round(np.log(expected / forward) / log_alpha))
-
-    def _find_or_create_child(self, price: float, current_ref: list,
-                              next_date: dt.datetime) -> Node:
-        # Cas 1 : aucun enfant créé à ce niveau
-        if current_ref[0] is None:
-            child = Node(price, self, next_date)
-            self.counters["nodes_created"] += 1
-            current_ref[0] = child
-            return child
-
-        current = current_ref[0]
-        tol = 1e-9 * max(abs(price), 1.0)
-
-        # Cas 2 : on avance dans la bonne direction depuis le dernier nœud
-        if current.und_price < price:
-            # Remonter
-            while (current.up_node is not None
-                   and current.up_node.und_price <= price + tol):
-                current = current.up_node
-            if abs(current.und_price - price) < tol:
-                current_ref[0] = current
-                self.counters["merges"] = self.counters.get("merges", 0) + 1
-                return current
-            lower = current
-            upper = current.up_node
-        else:
-            # Descendre
-            while (current.down_node is not None
-                   and current.down_node.und_price >= price - tol):
-                current = current.down_node
-            if abs(current.und_price - price) < tol:
-                current_ref[0] = current
-                self.counters["merges"] = self.counters.get("merges", 0) + 1
-                return current
-            lower = current.down_node
-            upper = current
-
-        # Cas 3 : insérer entre lower et upper
-        child = Node(price, self, next_date)
-        self.counters["nodes_created"] += 1
-        child.down_node = lower
-        child.up_node = upper
-        if lower is not None:
-            lower.up_node = child
-        if upper is not None:
-            upper.down_node = child
-        current_ref[0] = child
-        return child
-
-    def _branch_parent(self, parent: Node, E_trunk: float, alpha: float,
-                       is_tri: bool, current_ref: list,
-                       next_date: dt.datetime, ignore_pruning: bool):
-        E, _ = parent.forward_variance()
-        k_i = self._nearest_grid_position(E, E_trunk, alpha)
-
-        parent.next_up = None
-        parent.next_mid = None
-        parent.next_down = None
-
-        # Pruning
-        if (self.pricer_parameters.pruning
-                and parent.p_node < self.pricer_parameters.p_min
-                and not ignore_pruning):
-            if is_tri:
-                parent.next_mid = self._find_or_create_child(
-                    E_trunk * (alpha ** k_i), current_ref, next_date)
-                parent.p_up, parent.p_mid, parent.p_down = 0.0, 1.0, 0.0
-            else:
-                if k_i > 0:
-                    parent.next_down = self._find_or_create_child(
-                        E_trunk * (alpha ** (k_i - 1)), current_ref, next_date)
-                    parent.p_up, parent.p_mid, parent.p_down = 0.0, 0.0, 1.0
-                else:
-                    parent.next_up = self._find_or_create_child(
-                        E_trunk * (alpha ** (k_i + 1)), current_ref, next_date)
-                    parent.p_up, parent.p_mid, parent.p_down = 1.0, 0.0, 0.0
-            return
-
-        # Insertions croissantes : down, mid, up
-        if is_tri:
-            parent.next_down = self._find_or_create_child(
-                E_trunk * (alpha ** (k_i - 1)), current_ref, next_date)
-            parent.next_mid = self._find_or_create_child(
-                E_trunk * (alpha ** k_i), current_ref, next_date)
-            parent.next_up = self._find_or_create_child(
-                E_trunk * (alpha ** (k_i + 1)), current_ref, next_date)
-        else:
-            parent.next_down = self._find_or_create_child(
-                E_trunk * (alpha ** (k_i - 1)), current_ref, next_date)
-            parent.next_up = self._find_or_create_child(
-                E_trunk * (alpha ** (k_i + 1)), current_ref, next_date)
+        self.recursion_failed = False 
 
     def make_tree(self) -> None:
         t0_total = time.perf_counter()
+
         self.root = TruncNode(self.market_data.s0, self,
                               self.pricer_parameters.pricing_date, None)
         self.root.p_node = 1.0
-        self.counters["nodes_created"] = 1
+        self.counters["nodes_created"] += 1
         self.nodes_by_date = [[self.root]]
         self.step_nodes = [1]
         self.step_candidates = [1]
         self.step_times = [0.0]
         self.step_modes = ["ROOT"]
 
-        current_parents = [self.root]
-        trunk_S = self.market_data.s0
-        current_date = self.pricer_parameters.pricing_date
+        current = [self.root]
+        merge_tol = 1e-3
 
         for step in range(self.nb_steps):
             t0 = time.perf_counter()
-            is_tri = current_parents[0].is_trinomial_step()
+            is_tri = current[0].is_trinomial_step()
             mode_str = "TRI" if is_tri else "BIN"
-            next_date = current_date + dt.timedelta(days=self.delta_t * 365)
-            alpha = (self.alpha_tri if self.tree_mode == "trinomial_everywhere"
-                     else self.alpha_bin) if is_tri else self.sqrt_alpha_bin
+            next_date = current[0].date + dt.timedelta(days=self.delta_t * 365)
 
-            E_trunk = self._forward_from(current_date, trunk_S)
+            # 1) Collecte des candidats
+            candidates = []
+            for node in current:
+                for price, pos in node.child_specs():
+                    candidates.append((price, node, pos))
+            self.step_candidates.append(len(candidates))
 
-            # Cas dégénéré (vol = 0)
-            if abs(alpha - 1.0) < 1e-10:
-                child = Node(E_trunk, self, next_date)
-                self.counters["nodes_created"] += 1
-                self.root.next_up = self.root.next_mid = self.root.next_down = child
-                self.nodes_by_date.append([child])
-                self.step_nodes.append(1)
-                self.step_times.append(time.perf_counter() - t0)
-                self.step_modes.append(mode_str)
-                current_parents = [child]
-                trunk_S = E_trunk
-                current_date = next_date
-                continue
+            # 2) Tri par prix
+            candidates.sort(key=lambda c: c[0])
 
-            current_ref = [None]
+            # 3) Merge par prix
+            next_nodes: List[Node] = []
+            next_prices: List[float] = []
+            merges_here = 0
+            for price, parent, pos in candidates:
+                if (next_prices and
+                        abs(price - next_prices[-1])
+                            <= merge_tol * max(abs(price), 1.0)):
+                    target = next_nodes[-1]
+                    merges_here += 1
+                else:
+                    target = Node(price, self, next_date)
+                    self.counters["nodes_created"] += 1
+                    next_nodes.append(target)
+                    next_prices.append(price)
+                if pos == 'up':
+                    parent.next_up = target
+                elif pos == 'mid':
+                    parent.next_mid = target
+                else:
+                    parent.next_down = target
 
-            # 1. Identifier le tronc (le plus proche de E_trunk)
-            trunk_parent = min(current_parents,
-                               key=lambda n: abs(n.forward_variance()[0] - E_trunk))
+            self.counters["merges"] += merges_here
 
-            # 2. Collecter les parents DU PLUS BAS AU PLUS HAUT
-            parents_below = []
-            parent = trunk_parent.down_node
-            while parent is not None:
-                parents_below.append(parent)
-                parent = parent.down_node
-            parents_below.reverse()   # du plus bas au moins bas
+            # 4) Liens frères pour l'affichage / export
+            for i in range(1, len(next_nodes)):
+                next_nodes[i].down_node = next_nodes[i - 1]
+                next_nodes[i - 1].up_node = next_nodes[i]
 
-            parents_above = []
-            parent = trunk_parent.up_node
-            while parent is not None:
-                parents_above.append(parent)
-                parent = parent.up_node
-            parents_above.reverse()   # du moins haut au plus haut
-
-            # 3. Brancher dans l'ordre croissant (bas → tronc → haut)
-            for p in parents_below:
-                self._branch_parent(p, E_trunk, alpha, is_tri,
-                                    current_ref, next_date, ignore_pruning=False)
-            self._branch_parent(trunk_parent, E_trunk, alpha, is_tri,
-                                current_ref, next_date, ignore_pruning=True)
-            for p in parents_above:
-                self._branch_parent(p, E_trunk, alpha, is_tri,
-                                    current_ref, next_date, ignore_pruning=False)
-
-            # 4. Reconstruire la liste des nœuds du prochain niveau
-            next_nodes = []
-            curr = current_ref[0]
-            if curr is not None:
-                while curr.down_node is not None:
-                    curr = curr.down_node
-                while curr is not None:
-                    next_nodes.append(curr)
-                    curr = curr.up_node
-
-            # 5. Probabilités
-            for node in current_parents:
+            # 5) Probabilités et propagation
+            for node in current:
                 node.probas()
                 node.next_nodes_probas()
 
-            self.step_candidates.append(len(next_nodes))
             self.nodes_by_date.append(next_nodes)
             self.step_nodes.append(len(next_nodes))
             self.step_times.append(time.perf_counter() - t0)
             self.step_modes.append(mode_str)
 
-            current_parents = next_nodes
-            trunk_S = E_trunk
-            current_date = next_date
+            current = next_nodes
 
         self.last = self.nodes_by_date[-1][0] if self.nodes_by_date[-1] else None
         self.build_time = time.perf_counter() - t0_total
