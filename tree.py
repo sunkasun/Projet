@@ -329,6 +329,10 @@ class Tree:
         return fig
 
     def export_to_excel(self, elements: List[str] = None) -> bytes:
+        # Si aucun élément n'est fourni, on utilise la liste par défaut
+        if elements is None:
+            elements = ["und_price", "opt_price", "p_node", "p_up", "p_mid", "p_down"]
+
         wb = Workbook()
         max_col = max((len(c) for c in self.nodes_by_date), default=1)
         center_row = max_col + 2
@@ -347,7 +351,9 @@ class Tree:
                         val = round(val, 8)
                     ws.cell(row=row, column=col_index + 1, value=val)
 
-        del wb["Sheet"]
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+            
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
