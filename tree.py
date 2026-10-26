@@ -65,10 +65,26 @@ class Tree:
         self.build_time = 0.0
         self.backward_time = 0.0
         self.price_time = 0.0
-        self.recursion_failed = False
+        self.recursion_failed = False    # <-- NOUVEAU
 
-    # ==================================================================
-    # CONSTRUCTION DE L'ARBRE (Version Tri + Merge qui fonctionne)
+    def _forward_from(self, date: dt.datetime, S_start: float) -> float:
+        """
+        Calcule le forward du tronc partant de S_start à `date` sur un pas
+        Δt, en intégrant le dividende s'il tombe dans (date, date+Δt].
+        """
+        r = self.market_data.rate
+        D = self.market_data.dividend
+        ex_div = self.market_data.ex_div_date
+        dt_ = self.delta_t
+
+        E_pur = S_start * np.exp(r * dt_)
+        if D > 0 and (date < ex_div <= date + dt.timedelta(days=dt_ * 365)):
+            tau_days = (ex_div - date).total_seconds() / 86400
+            tau_ratio = tau_days / (dt_ * 365)
+            tau_ratio = max(0.0, min(1.0, tau_ratio))
+            return E_pur - D * np.exp(r * dt_ * (1.0 - tau_ratio))
+        return E_pur
+
     # ==================================================================
     def make_tree(self) -> None:
         t0_total = time.perf_counter()
@@ -84,56 +100,108 @@ class Tree:
         self.step_modes = ["ROOT"]
 
         current = [self.root]
-        merge_tol = 1e-3
+        trunk_S = self.market_data.s0
+        current_date = self.pricer_parameters.pricing_date
+        p_min = self.pricer_parameters.p_min if self.pricer_parameters.pruning else 0.0
 
         for step in range(self.nb_steps):
             t0 = time.perf_counter()
             is_tri = current[0].is_trinomial_step()
             mode_str = "TRI" if is_tri else "BIN"
-            next_date = current[0].date + dt.timedelta(days=self.delta_t * 365)
+            next_date = current_date + dt.timedelta(days=self.delta_t * 365)
 
-            # 1) Collecte des candidats
-            candidates = []
+            if is_tri:
+                a = self.alpha_tri if self.tree_mode == "trinomial_everywhere" \
+                    else self.alpha_bin
+            else:
+                a = self.sqrt_alpha_bin
+
+            E_trunk = self._forward_from(current_date, trunk_S)
+            log_a = np.log(a) if abs(a - 1.0) > 1e-10 else 0.0
+
+            # --- k de chaque parent ---
+            parent_k = []
             for node in current:
-                for price, pos in node.child_specs():
-                    candidates.append((price, node, pos))
-            self.step_candidates.append(len(candidates))
+                E_i, _ = node.forward_variance()
+                if E_i <= 0:
+                    E_i = 1e-12
+                k_i = 0 if abs(log_a) < 1e-12 else int(round(np.log(E_i / E_trunk) / log_a))
+                parent_k.append(k_i)
 
-            # 2) Tri par prix
-            candidates.sort(key=lambda c: c[0])
-
-            # 3) Merge par prix
-            next_nodes: List[Node] = []
-            next_prices: List[float] = []
-            merges_here = 0
-            for price, parent, pos in candidates:
-                if (next_prices and
-                        abs(price - next_prices[-1])
-                            <= merge_tol * max(abs(price), 1.0)):
-                    target = next_nodes[-1]
-                    merges_here += 1
+            # --- k atteints (pruning-aware) ---
+            reached_k = set()
+            for idx, node in enumerate(current):
+                k_i = parent_k[idx]
+                if node.p_node < p_min:
+                    # Parent mort → collapse sur son mid (1 seul enfant)
+                    reached_k.add(k_i)
                 else:
-                    target = Node(price, self, next_date)
-                    self.counters["nodes_created"] += 1
-                    next_nodes.append(target)
-                    next_prices.append(price)
-                if pos == 'up':
-                    parent.next_up = target
-                elif pos == 'mid':
-                    parent.next_mid = target
+                    if is_tri:
+                        reached_k.update([k_i - 1, k_i, k_i + 1])
+                    else:
+                        reached_k.update([k_i - 1, k_i + 1])
+
+            # --- Fallback : limite par écarts-types ---
+            if self.pricer_parameters.pruning and reached_k:
+                half_w = int(6 * np.sqrt(step + 1) /
+                             (1.0 if not is_tri else np.sqrt(3)))
+                half_w = max(half_w, 5)
+                reached_k = {k for k in reached_k if abs(k) <= half_w}
+
+            self.step_candidates.append(len(reached_k))
+
+            # --- Création des nœuds ---
+            sorted_k = sorted(reached_k)
+            k_to_node = {}
+            next_nodes = []
+            for k in sorted_k:
+                price = E_trunk * (a ** k)
+                node = Node(price, self, next_date)
+                k_to_node[k] = node
+                next_nodes.append(node)
+                self.counters["nodes_created"] += 1
+
+            # --- Liaison parents → enfants ---
+            for idx, parent in enumerate(current):
+                k_i = parent_k[idx]
+                if parent.p_node < p_min:
+                    # Mode pruning : on force 1 seul enfant + proba 1
+                    if is_tri:
+                        parent.next_mid = k_to_node.get(k_i)
+                        parent.next_up = parent.next_down = None
+                        parent.p_up = parent.p_down = 0.0
+                        parent.p_mid = 1.0
+                    else:
+                        # Binomial : vers l'intérieur de l'arbre
+                        if k_i > 0:
+                            parent.next_down = k_to_node.get(k_i - 1)
+                            parent.next_up = parent.next_mid = None
+                            parent.p_up = parent.p_mid = 0.0
+                            parent.p_down = 1.0
+                        else:
+                            parent.next_up = k_to_node.get(k_i + 1)
+                            parent.next_mid = parent.next_down = None
+                            parent.p_mid = parent.p_down = 0.0
+                            parent.p_up = 1.0
                 else:
-                    parent.next_down = target
+                    if is_tri:
+                        parent.next_mid = k_to_node.get(k_i)
+                        parent.next_up = k_to_node.get(k_i + 1)
+                        parent.next_down = k_to_node.get(k_i - 1)
+                    else:
+                        parent.next_mid = None
+                        parent.next_up = k_to_node.get(k_i + 1)
+                        parent.next_down = k_to_node.get(k_i - 1)
 
-            self.counters["merges"] += merges_here
-
-            # 4) Liens frères pour l'affichage / export
+            # --- Liens frères ---
             for i in range(1, len(next_nodes)):
                 next_nodes[i].down_node = next_nodes[i - 1]
                 next_nodes[i - 1].up_node = next_nodes[i]
 
-            # 5) Probabilités et propagation
+            # --- Probabilités + propagation ---
             for node in current:
-                node.probas()
+                if node.p_node >= p_min:
+                    node.probas()
                 node.next_nodes_probas()
 
             self.nodes_by_date.append(next_nodes)
@@ -142,6 +210,8 @@ class Tree:
             self.step_modes.append(mode_str)
 
             current = next_nodes
+            trunk_S = E_trunk
+            current_date = next_date
 
         self.last = self.nodes_by_date[-1][0] if self.nodes_by_date[-1] else None
         self.build_time = time.perf_counter() - t0_total
@@ -172,7 +242,7 @@ class Tree:
             self.price_time = t2 - t0
             return r
         except RecursionError:
-            self.recursion_failed = True
+            self.recursion_failed = True    # <-- NOUVEAU
             self.price_time = time.perf_counter() - t0
             return None
 
@@ -189,13 +259,12 @@ class Tree:
                     for node in terminal_nodes)
         return total * df_T
 
+    # ==================================================================
     def iterate_columns(self):
         for nodes in self.nodes_by_date:
             if nodes:
                 yield nodes[0].date, nodes
 
-    # ==================================================================
-    # Plots et Export
     # ==================================================================
     def plot_exercise_probability_by_date(self):
         if self.root.opt_price is None:
@@ -221,7 +290,8 @@ class Tree:
             self.backward_pricing()
         dates, values = [], []
         for date, nodes in self.iterate_columns():
-            t_years = (date - self.pricer_parameters.pricing_date).total_seconds() / (365 * 86400)
+            elapsed_seconds = (date - self.pricer_parameters.pricing_date).total_seconds()
+            t_years = elapsed_seconds / (365.0 * 86400.0)
             df = np.exp(-self.market_data.rate * t_years)
             values.append(sum(n.p_node * (n.opt_price or 0.0) * df for n in nodes))
             dates.append(date)
@@ -236,10 +306,23 @@ class Tree:
                      f"{self.option_data.call_put}, K={self.option_data.K}, "
                      f"{self.nb_steps} steps)")
         ax.grid(True, alpha=0.4); ax.legend()
+        root_val = values[0]
+        margin = max(0.01 * abs(root_val), 1e-3)
+        ax.set_ylim(root_val - margin, root_val + margin)
         plt.tight_layout()
         return fig, dates, values
 
     def plot_tree(self, max_steps: int = 10):
+        """
+        Plot Plotly de l'arbre :
+        - Taille des nœuds ∝ √p_node
+        - Couleur graduée selon opt_price
+        - Rouge vif pour les nœuds d'exercice anticipé
+        - Positionnement par index dans la colonne (pas de lignes croisées)
+        - Axe Y standard : prix haut en haut, prix bas en bas.
+        """
+        import plotly.graph_objects as go
+
         node_x, node_y = [], []
         node_size, node_color, node_labels = [], [], []
         node_text = []
@@ -247,11 +330,17 @@ class Tree:
 
         pos_map = {}
 
+        # 1) Calculer la position de chaque nœud (centré)
+        # Les nœuds sont triés par prix croissant dans nodes_by_date.
+        # i=0 -> prix bas, i=max -> prix haut.
+        # On veut que i=max soit en haut (y positif).
         for step, nodes in enumerate(self.nodes_by_date):
             if step > max_steps:
                 break
             mid = (len(nodes) - 1) / 2
             for i, node in enumerate(nodes):
+                # i - mid sera négatif pour les prix bas (en bas)
+                # et positif pour les prix hauts (en haut).
                 pos_map[(step, id(node))] = (i - mid)
 
         prices_all = [n.opt_price for nodes in self.nodes_by_date[:max_steps+1] 
@@ -261,13 +350,27 @@ class Tree:
         if p_max_color == p_min_color:
             p_max_color += 1e-9
 
+        def _thermal_color(t: float) -> str:
+            t = max(0.0, min(1.0, t))
+            if t < 0.25:
+                r, g, b = 0, int(255 * (t / 0.25)), 255
+            elif t < 0.5:
+                r, g, b = 0, 255, int(255 * (1 - (t - 0.25) / 0.25))
+            elif t < 0.75:
+                r, g, b = int(255 * ((t - 0.5) / 0.25)), 255, 0
+            else:
+                r, g, b = 255, int(255 * (1 - (t - 0.75) / 0.25)), 0
+            return f"rgb({r},{g},{b})"
+
         for step, nodes in enumerate(self.nodes_by_date):
             if step > max_steps:
                 break
+            
             for node in nodes:
                 y = pos_map[(step, id(node))]
                 display_val = node.opt_price if node.opt_price is not None else node.und_price
                 
+                # Skip les nœuds non atteints (pas de parent)
                 if node.p_node <= 0.0 and step > 0:
                     continue
                     
@@ -328,39 +431,127 @@ class Tree:
             plot_bgcolor='rgb(248,248,248)', height=600)
         return fig
 
+    # ==================================================================
     def export_to_excel(self, elements: List[str] = None) -> bytes:
-        # Si aucun élément n'est fourni, on utilise la liste par défaut
-        if elements is None:
-            elements = ["und_price", "opt_price", "p_node", "p_up", "p_mid", "p_down"]
-
         wb = Workbook()
-        max_col = max((len(c) for c in self.nodes_by_date), default=1)
-        center_row = max_col + 2
 
-        for elem in elements:
-            ws = wb.create_sheet(title=elem)
-            for col_index, nodes in enumerate(self.nodes_by_date):
-                sorted_nodes = sorted(nodes, key=lambda n: n.und_price, reverse=True)
-                mid = len(sorted_nodes) // 2
-                for i, node in enumerate(sorted_nodes):
-                    row = center_row + (i - mid)
-                    if row < 1:
-                        row = 1
-                    val = getattr(node, elem, None)
-                    if isinstance(val, float):
-                        val = round(val, 8)
-                    ws.cell(row=row, column=col_index + 1, value=val)
+        ws0 = wb.create_sheet("Metadata")
+        mkt = self.market_data
+        opt = self.option_data
+        pr = self.pricer_parameters
+        metadata = [
+            ("Pricing date", pr.pricing_date.strftime("%Y-%m-%d")),
+            ("Maturity date", opt.maturity.strftime("%Y-%m-%d")),
+            ("T (years)", round(self.T, 6)),
+            ("Underlying S0", mkt.s0),
+            ("Strike K", opt.K),
+            ("Risk-free rate r", mkt.rate),
+            ("Volatility σ", mkt.vol),
+            ("Dividend D", mkt.dividend),
+            ("Ex-div date", (mkt.ex_div_date.strftime("%Y-%m-%d")
+                             if mkt.dividend > 0 else "— (pas de dividende)")),
+            ("Option type", opt.call_put),
+            ("Exercise style", opt.eur_am),
+            ("Tree mode", pr.tree_mode),
+            ("Nb steps", self.nb_steps),
+            ("Δt (years)", round(self.delta_t, 8)),
+            ("Discount factor DF", round(self.df, 8)),
+            ("√α_bin", round(self.sqrt_alpha_bin, 8)),
+            ("α_tri (HW)", round(self.alpha_tri, 8)),
+            ("Pruning enabled", pr.pruning),
+            ("p_min", pr.p_min if pr.pruning else "—"),
+            ("Nodes created", self.counters["nodes_created"]),
+            ("Merges", self.counters["merges"]),
+            ("Clamped probas", self.counters.get("clamped_probas", 0)),
+            ("Build time (ms)", round(self.build_time * 1000, 3)),
+            ("Backward time (ms)", round(self.backward_time * 1000, 3)),
+            ("Total time (ms)", round(self.price_time * 1000, 3)),
+        ]
+        ws0.cell(row=1, column=1, value="Parameter")
+        ws0.cell(row=1, column=2, value="Value")
+        for i, (k, v) in enumerate(metadata, start=2):
+            ws0.cell(row=i, column=1, value=k)
+            ws0.cell(row=i, column=2, value=v)
+
+        ws = wb.create_sheet("Summary")
+        headers = ["step", "date", "mode", "n_nodes", "sum_p_node",
+                   "sum_p_exercised", "min_und", "max_und", "weighted_opt_price"]
+        for j, h in enumerate(headers, start=1):
+            ws.cell(row=1, column=j, value=h)
+
+        for step_idx, nodes in enumerate(self.nodes_by_date):
+            if not nodes:
+                continue
+            mode = self.step_modes[step_idx] if step_idx < len(self.step_modes) else ""
+            p_sum = sum(n.p_node for n in nodes)
+            p_ex = sum(n.p_node for n in nodes if n.is_exerced)
+            unds = [n.und_price for n in nodes]
+            opt_w = sum(n.p_node * (n.opt_price or 0.0) for n in nodes)
+            row = [step_idx, nodes[0].date.strftime("%Y-%m-%d"), mode,
+                   len(nodes), round(p_sum, 10), round(p_ex, 10),
+                   round(min(unds), 6), round(max(unds), 6), round(opt_w, 6)]
+            for j, v in enumerate(row, start=1):
+                ws.cell(row=step_idx + 2, column=j, value=v)
+
+        ws2 = wb.create_sheet("Nodes")
+        headers2 = ["step", "date", "und_price", "opt_price",
+                    "p_node", "p_up", "p_mid", "p_down",
+                    "is_trinomial_step", "is_exerced",
+                    "next_up_und", "next_mid_und", "next_down_und"]
+        for j, h in enumerate(headers2, start=1):
+            ws2.cell(row=1, column=j, value=h)
+
+        r = 2
+        for step_idx, nodes in enumerate(self.nodes_by_date):
+            is_tri_step = (step_idx < len(self.step_modes) - 1
+                           and self.step_modes[step_idx + 1] == "TRI")
+            for node in nodes:
+                row = [
+                    step_idx, node.date.strftime("%Y-%m-%d"),
+                    round(node.und_price, 6),
+                    round(node.opt_price, 6) if node.opt_price is not None else None,
+                    round(node.p_node, 10),
+                    round(node.p_up, 10), round(node.p_mid, 10), round(node.p_down, 10),
+                    bool(is_tri_step), bool(node.is_exerced),
+                    round(node.next_up.und_price, 6) if node.next_up else None,
+                    round(node.next_mid.und_price, 6) if node.next_mid else None,
+                    round(node.next_down.und_price, 6) if node.next_down else None,
+                ]
+                for j, v in enumerate(row, start=1):
+                    ws2.cell(row=r, column=j, value=v)
+                r += 1
+
+        self._write_diamond(wb.create_sheet("Diamond_und_price"), "und_price")
+        self._write_diamond(wb.create_sheet("Diamond_opt_price"), "opt_price")
+        self._write_diamond(wb.create_sheet("Diamond_p_node"),    "p_node")
 
         if "Sheet" in wb.sheetnames:
             del wb["Sheet"]
-            
+
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
         return buf.getvalue()
 
-    # ==================================================================
-    # Debug
+    def _write_diamond(self, ws, field: str) -> None:
+        max_col = max((len(c) for c in self.nodes_by_date), default=1)
+        center_row = max_col + 2
+
+        for col_idx, nodes in enumerate(self.nodes_by_date):
+            if not nodes:
+                continue
+            sorted_nodes = sorted(nodes, key=lambda n: n.und_price, reverse=True)
+            n = len(sorted_nodes)
+            start_row = center_row - (n - 1) // 2
+            for i, node in enumerate(sorted_nodes):
+                row = start_row + i
+                if row < 1:
+                    row = 1
+                val = getattr(node, field, None)
+                if isinstance(val, float):
+                    val = round(val, 8)
+                ws.cell(row=row, column=col_idx + 1, value=val)
+
     # ==================================================================
     def _has_div_step(self) -> bool:
         return any(m == "TRI" for m in self.step_modes)
@@ -399,14 +590,14 @@ class Tree:
         growth = max(ratios) if ratios else 0.0
         bin_ratios = [ratios[i] for i, m in enumerate(self.step_modes[1:]) if m == "BIN"]
         bin_growth = max(bin_ratios) if bin_ratios else 0.0
-        verdict = "OK" if bin_growth < 2.5 else "EXPLOSION"
-        lines.append(f"  Growth ratio (BIN max) = {bin_growth:.4f}  -> {verdict}")
+        verdict = "OK" if bin_growth < 2.5 else "⚠️ EXPLOSION"
+        lines.append(f"  Growth ratio (BIN max) = {bin_growth:.4f}  → {verdict}")
         lines.append(f"  Growth ratio (global)  = {growth:.4f}")
         lines.append(f"  build_time     = {self.build_time*1000:.3f} ms")
         lines.append(f"  backward_time  = {self.backward_time*1000:.3f} ms")
         lines.append(f"  total          = {self.price_time*1000:.3f} ms")
         if self.recursion_failed:
-            lines.append(f"  recursion      = FAILED (RecursionError)")
+            lines.append(f"  recursion      = ⚠️ FAILED (RecursionError)")
         return "\n".join(lines)
 
     def debug_steps_dataframe(self):
@@ -428,6 +619,7 @@ class Tree:
             "time (ms)": [float(t) * 1000.0 for t in times],
         })
 
+    # ==================================================================
     def sanity_checks(self) -> list:
         from black_scholes import Black_Scholes
         from option import Option as _Option
@@ -456,6 +648,7 @@ class Tree:
 
         base_price = self.root.opt_price
 
+        # --- Check 1 : Euro sans div ≈ BS ---
         if (not opt.is_american()) and mkt.dividend == 0 and mkt.vol > 1e-8:
             try:
                 bs = Black_Scholes(pr, mkt, opt).pricing_BS()
@@ -466,7 +659,7 @@ class Tree:
                     detail = f"too few steps ({self.nb_steps}) to judge"
                 else:
                     verdict = "PASS" if diff < tol else "FAIL"
-                    detail = "" 
+                    detail = ""  # <-- CORRECTION ICI
                 checks.append({
                     "name": "European without div ≈ Black-Scholes",
                     "value": f"tree={base_price:.6f}  BS={bs:.6f}  diff={diff:.2e}  tolerance={tol:.2e}",
@@ -479,6 +672,7 @@ class Tree:
                            "value": "only for european options without dividend",
                            "verdict": "N/A", "detail": ""})
 
+        # --- Check 2 : Put-call parity ---
         if (not opt.is_american()) and mkt.dividend == 0 and mkt.vol > 1e-8:
             try:
                 c = price_variant(call_put="call")
@@ -501,6 +695,7 @@ class Tree:
                            "value": "only for european options without dividend",
                            "verdict": "N/A", "detail": ""})
 
+        # --- Check 3 : A_call = E_call (sans div, r>0) ---
         if mkt.dividend == 0 and mkt.rate > 0 and opt.call_put == "call":
             try:
                 a = price_variant(eur_am="american")
@@ -520,6 +715,7 @@ class Tree:
                            "value": "only for call without dividend and with r>0",
                            "verdict": "N/A", "detail": ""})
 
+        # --- Check 4 : A_put ≥ E_put ---
         if opt.call_put == "put":
             try:
                 a = price_variant(eur_am="american")
@@ -539,6 +735,7 @@ class Tree:
                            "value": "only for put",
                            "verdict": "N/A", "detail": ""})
 
+        # --- Check 5 : A_call ≥ E_call (div > 0) ---
         if mkt.dividend > 0 and opt.call_put == "call":
             try:
                 a = price_variant(eur_am="american")
@@ -561,7 +758,7 @@ class Tree:
                            "verdict": "N/A", "detail": ""})
 
         return checks
-
+    # ==================================================================
     def gap(self, given_gap: float = None) -> Tuple[float, float, float]:
         T = self.T
         sd = self.market_data.s0 * np.exp(self.market_data.rate * T) \
