@@ -159,11 +159,11 @@ class GreeksBS:
         if self.BS.option_data.call_put == "call":
             second_part: float = self.BS.market_data.rate * self.BS.option_data.K \
                 * np.exp(-self.BS.market_data.rate * self.BS.T) * norm.cdf(self.BS.d2)
-            return (first_part - second_part) / 365
+            return (first_part - second_part) / 252
         else:
             second_part: float = self.BS.market_data.rate * self.BS.option_data.K \
                 * np.exp(-self.BS.market_data.rate * self.BS.T) * norm.cdf(-self.BS.d2)
-            return (first_part + second_part) / 365
+            return (first_part + second_part) / 252
 
     def rho(self) -> float:
         if self.BS.option_data.call_put == "call":
