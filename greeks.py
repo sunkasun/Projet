@@ -97,7 +97,7 @@ class GreeksTree:
         params_shocked: Parameters = copy.deepcopy(self.params)
         params_shocked.maturity = self.params.maturity - dt.timedelta(days=shift_days)
         params_shocked.delta_t = (params_shocked.maturity - params_shocked.pricing_date).days \
-                                  / (params_shocked.nb_steps * 365)
+                                  / (params_shocked.nb_steps * 252)
         v_shocked: float = price_tree_one_dim(params_shocked)
         v_now: float = price_tree_one_dim(self.params)
         return (v_shocked - v_now) / shift_days
