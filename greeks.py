@@ -88,19 +88,25 @@ class GreeksTree:
         """∂V/∂σ, per 1% vol change."""
         return OneDimDerivative(price_tree_one_dim, self.params).first_derivative("vol", shift) / 100
 
-    def theta(self, shift_days: int) -> float:
+    def theta(self, shift_days: float) -> float:
         """
-        ∂V/∂t, per calendar day. We shift the maturity back by `shift_days`
-        (advancing calendar time) and reprice. Standard convention: theta < 0
-        for a typical long option.
+        ∂V/∂t, par jour ouvré (convention 252 jours).
+        On choque la maturité de `shift_days` (jours calendaires),
+        puis on convertit le résultat en jour ouvré via (365/252).
         """
         params_shocked: Parameters = copy.deepcopy(self.params)
         params_shocked.maturity = self.params.maturity - dt.timedelta(days=shift_days)
+        
+        # IMPORTANT : delta_t doit toujours être calculé avec 365 (jours calendaires)
         params_shocked.delta_t = (params_shocked.maturity - params_shocked.pricing_date).days \
-                                  / (params_shocked.nb_steps * 252)
+                                  / (params_shocked.nb_steps * 365)
+        
         v_shocked: float = price_tree_one_dim(params_shocked)
         v_now: float = price_tree_one_dim(self.params)
-        return (v_shocked - v_now) / shift_days
+        
+        # On divise par shift_days (pour avoir la variation par jour calendaire)
+        # puis on multiplie par (365/252) pour passer au jour ouvré.
+        return (v_shocked - v_now) / shift_days * (365.0 / 252.0)
 
     def vomma(self, shift_vol: float) -> float:
         """
@@ -159,11 +165,11 @@ class GreeksBS:
         if self.BS.option_data.call_put == "call":
             second_part: float = self.BS.market_data.rate * self.BS.option_data.K \
                 * np.exp(-self.BS.market_data.rate * self.BS.T) * norm.cdf(self.BS.d2)
-            return (first_part - second_part) / 252
+            return (first_part - second_part) / 252   # <-- 252
         else:
             second_part: float = self.BS.market_data.rate * self.BS.option_data.K \
                 * np.exp(-self.BS.market_data.rate * self.BS.T) * norm.cdf(-self.BS.d2)
-            return (first_part + second_part) / 252
+            return (first_part + second_part) / 252   # <-- 252
 
     def rho(self) -> float:
         if self.BS.option_data.call_put == "call":
