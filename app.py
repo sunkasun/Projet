@@ -346,7 +346,7 @@ def render_shift_info():
     shift_vanna_s = h_S
     shift_vanna_vol = h_vol
     shift_rho = 0.01
-    shift_theta_days = 365.0 / 252.0
+    shift_theta_days = 1
     
     st.caption(
         f"ℹ️ **Adaptive finite-difference shifts** (N={N}): "
